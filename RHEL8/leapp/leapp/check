@@ -1,0 +1,80 @@
+#!/bin/bash
+
+. /usr/share/preupgrade/common.sh
+
+#END GENERATED SECTION
+
+### For more information see 'man preupg-content-creator' or 'man preupgrade-assistant-api'.
+
+# This preupgrade module is a wrapper for including Leapp preupgrade
+# results in the Gopa preupgrade report. If the Leapp preupgrade was
+# completed successfully and there were no inhibitors were reported,
+# the module report "fixed" result status; otherwise, "failed" 
+# result status is reported.
+
+
+# Verify migration-results and leapp-report files exists
+if [[ ! -f /etc/migration-results || ! -f /var/log/leapp/leapp-report.txt ]]; then
+  log_extreme_risk 'The migration-results and/or leapp-report.txt file is missing.'
+  cat > $SOLUTION_FILE <<-EOF
+	Required Leapp files were not found, indicating that the
+	Leapp preupgrade was not run or was unsuccessful.
+	EOF
+fi
+
+# Get details of latest Leapp preupgrade run
+leapp_last_act="$(grep activity\" /etc/migration-results | tail -1 | awk -F\" '{print $4}')"
+leapp_ended="$(grep activity_ended /etc/migration-results | tail -1 | awk -F\" '{print $4}')"
+leapp_age=$(($(date +%s)-$(date +%s -d "$leapp_ended")))
+leapp_success="$(grep success /etc/migration-results | tail -1 | egrep -o 'true|false')"
+
+# Verify Leapp preupgrade was just run
+if [[ "$leapp_last_act" != 'preupgrade' ]]; then
+  log_extreme_risk 'The latest Leapp activity was not a preupgrade.'
+  cat > $SOLUTION_FILE <<-EOF
+	The latest Leapp activity was $leapp_last_act, not a preupgrade.
+	EOF
+elif [[ $leapp_age -gt 300 ]]; then
+  log_extreme_risk 'The latest Leapp preupgrade is stale.'
+  cat > $SOLUTION_FILE <<-EOF
+	The latest Leapp preupgrade run at $leapp_ended
+	is $((leapp_age/60)) minutes old.
+	EOF
+fi
+
+# Fail here if Leapp preupgrade is no good
+if [[ -s $SOLUTION_FILE ]]; then
+  log_info 'The Leapp preupgrade is missing or not usable.'
+  cat >> $SOLUTION_FILE <<-EOF
+
+	The Leapp preupgreade should have been run immediately before the
+	generation of this preupgrade report. Make sure your playbook
+	automation is running Leapp preupgrade correctly and try again.
+	EOF
+  exit_fail
+fi
+
+# Fail here if any inhibitors were reported
+if [[ "$leapp_success" != 'true' ]]; then
+  log_extreme_risk 'The Leapp preupgrade reported inhibitors.'
+  cat > $SOLUTION_FILE <<-EOF
+	The Leapp preupgrade reported inhibitors. Review the results listed
+	below. Any actors listed with a "high (inhibitor)" risk factor must be
+	addressed. After following the recommended remediations, try the
+	preupgrade again.
+
+	EOF
+  fold -sw72 /var/log/leapp/leapp-report.txt >> $SOLUTION_FILE
+  exit_fail
+fi
+
+# Leapp preupgrade looks good
+log_info 'The Leapp preupgrade reported no inhibitors.'
+cat > $SOLUTION_FILE <<-EOF
+	The Leapp preupgrade completed successfully and there were no inhibitors
+	reported. Review the results listed below and consider the recommended
+	remediations.
+
+	EOF
+fold -sw72 /var/log/leapp/leapp-report.txt >> $SOLUTION_FILE
+exit_fixed
