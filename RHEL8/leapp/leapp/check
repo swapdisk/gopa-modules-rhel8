@@ -26,20 +26,21 @@ fi
 
 # Get details of latest Leapp preupgrade run
 leapp_last_act="$(grep activity\" /etc/migration-results | tail -1 | awk -F\" '{print $4}')"
-leapp_ended="$(grep activity_ended /etc/migration-results | tail -1 | awk -F\" '{print $4}')"
-leapp_age=$(($(date +%s)-$(date +%s -d "$leapp_ended")))
+leapp_ended=$(stat -c%Y /etc/migration-results)
+gopa_started=$(stat -c%Y /proc/$PPID/comm)
+leapp_age=$((gopa_started-leapp_ended))
 leapp_success="$(grep success /etc/migration-results | tail -1 | egrep -o 'true|false')"
 
-# Verify Leapp preupgrade was just run
+# Verify Leapp preupgrade was run just now
 if [[ "$leapp_last_act" != 'preupgrade' ]]; then
   log_extreme_risk 'The latest Leapp activity was not a preupgrade.'
   cat > $SOLUTION_FILE <<-EOF
 	The latest Leapp activity was $leapp_last_act, not a preupgrade.
 	EOF
-elif [[ $leapp_age -gt 300 ]]; then
+elif [[ $leapp_age -gt 120 ]]; then
   log_extreme_risk 'The latest Leapp preupgrade is stale.'
   cat > $SOLUTION_FILE <<-EOF
-	The latest Leapp preupgrade run at $leapp_ended
+	The latest Leapp preupgrade run at $(date -Is -d "@$leapp_ended")
 	is $((leapp_age/60)) minutes old.
 	EOF
 fi
