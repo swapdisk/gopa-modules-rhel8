@@ -17,9 +17,11 @@
 if [[ ! -f /etc/migration-results || ! -f /var/log/leapp/leapp-report.txt ]]; then
   log_extreme_risk 'The migration-results and/or leapp-report.txt file is missing.'
   cat > $SOLUTION_FILE <<-EOF
-	Required Leapp files were not found, indicating that the
-	Leapp preupgrade was not run or was unsuccessful.
+	Required Leapp files were not found, indicating that a Leapp preupgrade
+	was not run or was unsuccessful. Make sure your playbook automation is
+	running Leapp preupgrade correctly and try again.
 	EOF
+  exit_fail
 fi
 
 # Get details of latest Leapp preupgrade run
