@@ -1,0 +1,166 @@
+#!/bin/bash
+
+. /usr/share/preupgrade/common.sh
+
+#END GENERATED SECTION
+
+### For more information see 'man preupg-content-creator' or 'man preupgrade-assistant-api'.
+
+# This module verifies if there is sufficient space in the root volume
+# group to create LVM snapshots. If there is not sufficient space, the
+# solution text warns that rolling back using LVM snapshots will not be
+# possible and "needs action" result status is reported.
+# 
+# If there is enough space for snapshots, the snapshots sizes that will
+# be created are reported.
+#
+# If snapshots are to be created, the module goes on to verify that the
+# LVM snapshot autoextend option is enabled and recommended autoextend
+# settings are configured. If the settings will be changed, this is
+# reported with "fixed" result status. If the settings do not need to be
+# changed, the module reports with "passed" result status.
+#
+# TODO: 
+# - We are assuming all OS filesystems are under the same volume group.
+# - Space requirement calculations should be tested in your customer's
+#   unique environment.
+
+PREUPGRADE_SCRIPT_PATH=$PREUPGRADE_SCRIPT_DIR/00_lvm_autoextend.sh
+SNAPSHOT_DATA_FILE=$VALUE_TMP_PREUPGRADE/snapshot-data
+SNAPSHOT_REPORT=$VALUE_TMP_PREUPGRADE/snapshot-report.log
+
+# Get volume group of root filesystem
+eval $(lvs --units b --nosuffix --noheadings --nameprefixes -o vg_name,vg_free,vg_extent_size $(findmnt -o source --noheadings --target /))
+if [[ -z $LVM2_VG_NAME ]]; then
+  log_high_risk 'Root filesystem is not mounted from LVM.'
+  cat > $SOLUTION_FILE <<-EOF
+	The source block device for the root filesystem is not an LVM logical
+	volume. This means it will not be possible to create LVM snapshots
+	required to support rolling back after the OS upgrade. Another method
+	of rolling back should to be planned or proceed at your own risk.
+	EOF
+  exit_fail
+fi
+
+# Verify no snapshot volumes already created
+eval $(vgs --noheadings --nameprefixes -o snap_count $LVM2_VG_NAME)
+if [[ $LVM2_SNAP_COUNT -gt 0 ]]; then
+  log_high_risk "Found active snapshot volumes in $LVM2_VG_NAME volume group."
+  cat > $SOLUTION_FILE <<-EOF
+	Found active snapshots under $LVM2_VG_NAME:
+
+	$(lvs -a $LVM2_VG_NAME)
+
+	These would interfere with creation of LVM snapshots by the playbook
+	automation. Any snapshots under $LVM2_VG_NAME should be removed or
+	merged. Then run the preupgrade again and check the report to verify
+	there is sufficient space.
+	EOF
+  exit_fail
+fi
+
+# Assess available free space in volume group. Calculation is as follows:
+# - for each filesystem mounted from root volume group to be snapped
+# - (/tmp, /var/tmp, /var/crash, and /home are not snapped)
+# - assume half of filesystem space used is needed
+# - except for / and /var which need half used or 6 Gb, whichever is more
+# - snapshot sizes rounded up to next multiple of extent size
+rootvar_min=$((6*2**30))
+printf '%-15s%10s\n' LOGVOL SIZE_MB > $SNAPSHOT_REPORT
+truncate -s0 $SNAPSHOT_DATA_FILE
+df -PlB1 | grep "^/dev/mapper/$LVM2_VG_NAME-" | egrep -v '/tmp|/crash|/home' | while read dfline; do
+eval $(lvs --noheadings --nameprefixes -o lv_name $(echo $dfline | awk '{print $1}'))
+  fs_size=$(echo $dfline | awk '{print $2}')
+  fs_used=$(echo $dfline | awk '{print $3}')
+  fs_path=$(echo $dfline | awk '{print $6}')
+  fs_total=$((fs_total+fs_size))
+  snap_size=$((fs_used/2))
+  [[ $fs_path =~ ^/$|^/var && $snap_size -lt $rootvar_min ]] && snap_size=$rootvar_min
+  snap_size=$((snap_size-snap_size%LVM2_VG_EXTENT_SIZE+LVM2_VG_EXTENT_SIZE))
+  echo "$LVM2_VG_NAME $LVM2_LV_NAME $snap_size" >> $SNAPSHOT_DATA_FILE
+  printf '%-15s%10s\n' $LVM2_LV_NAME $((snap_size/2**20)) >> $SNAPSHOT_REPORT
+done
+
+# Get the total space required for snapshots
+for snap_size in $(awk '{print $3}' $SNAPSHOT_DATA_FILE); do
+  snap_total=$((snap_total+snap_size))
+done
+echo '---' >> $SNAPSHOT_REPORT
+printf '%-15s%10s\n' TOTAL_MB $((snap_total/2**20)) >> $SNAPSHOT_REPORT
+printf '%-15s%10s\n' VG_FREE $((LVM2_VG_FREE/2**20)) >> $SNAPSHOT_REPORT
+printf '%-15s%10s\n' MARGIN $(((LVM2_VG_FREE-snap_total)/2**20)) >> $SNAPSHOT_REPORT
+
+# Report snapshot space assessment results
+if [[ $fs_total -lt $LVM2_VG_FREE ]]; then
+  log_info "There is more than enough space in the $LVM2_VG_NAME volume group."
+  cat > $SOLUTION_FILE <<-EOF
+	The free space in the $LVM2_VG_NAME volume group is greater than the
+	total size of the filesystems that need LVM snapshots. There is enough
+	space for snapshots and very low risk of the snapshots running out of
+	space over time.
+	EOF
+elif [[ $snap_total -lt $LVM2_VG_FREE ]]; then
+  log_info "There is sufficient space in the $LVM2_VG_NAME volume group."
+  cat > $SOLUTION_FILE <<-EOF
+	The free space in the $LVM2_VG_NAME volume group is greater than the
+	estimated space required to create LVM snapshots. 
+	EOF
+else
+  rm $SNAPSHOT_DATA_FILE
+  log_high_risk "There is not sufficient space in the $LVM2_VG_NAME volume group for snapshots."
+  cat > $SOLUTION_FILE <<-EOF
+	The free space in the $LVM2_VG_NAME volume group is not sufficient to
+	satisfy the estimated space required to support LVM snapshots. The
+	playbook automation will not create LVM snapshots. Another method of
+	rolling back should to be planned or proceed at your own risk.
+
+	Free extents in $LVM2_VG_NAME: $((LVM2_VG_FREE/2**20)) MB
+	Estimated space required: $((snap_total/2**20)) MB
+	EOF
+  exit_fail
+fi
+
+# If we get here, we are go for snapshots
+cat >> $SOLUTION_FILE <<-EOF
+
+	The playbook automation will create LVM snapshots as follows just before
+	starting the OS upgrade:
+
+	EOF
+cat $SNAPSHOT_REPORT >> $SOLUTION_FILE
+
+# Verify LVM autoextend is configured
+eval $(lvm config | egrep 'snapshot_autoextend_(threshold|percent)')
+if [[ $snapshot_autoextend_threshold -gt 70 || $snapshot_autoextend_percent -lt 20 ]]; then
+  log_info 'LVM autoextend settings will be adjusted.'
+  cat >> $SOLUTION_FILE <<-EOF
+
+	The recommended settings for the LVM snapshot autoextend option is
+	threshold of 70 or less and percent of at least 20. The settings
+	currently configured are: 
+
+	snapshot_autoextend_threshold = $snapshot_autoextend_threshold $([[ $snapshot_autoextend_threshold -eq 100 ]] && echo '(disabled)')
+	snapshot_autoextend_percent = $snapshot_autoextend_percent
+
+	These settings will be adjusted in /etc/lvm/lvm.conf when the playbook
+	automation creates the LVM snapshots. 
+	EOF
+
+  cat > $PREUPGRADE_SCRIPT_PATH <<-EOF
+	#!/bin/bash
+
+	# This script configures LVM autoextend option
+	echo Configuring LVM autoextend.
+	sed -i -r 's/^([[:blank:]]*snapshot_autoextend_threshold[[:blank:]]*=[[:blank:]]*).*\$/\\170/' /etc/lvm/lvm.conf
+	sed -i -r 's/^([[:blank:]]*snapshot_autoextend_percent[[:blank:]]*=[[:blank:]]*).*\$/\\120/' /etc/lvm/lvm.conf
+	systemctl restart lvm2-monitor
+	echo Done.
+
+	exit 0
+	EOF
+  chmod 755 $PREUPGRADE_SCRIPT_PATH
+
+  exit_fixed
+else
+  exit_pass
+fi
