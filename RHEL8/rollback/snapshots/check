@@ -69,19 +69,21 @@ rootvar_min=$((6*2**30))
 printf '%-15s%10s\n' LOGVOL SIZE_MB > $SNAPSHOT_REPORT
 truncate -s0 $SNAPSHOT_DATA_FILE
 df -PlB1 | grep "^/dev/mapper/$LVM2_VG_NAME-" | egrep -v '/tmp|/crash|/home' | while read dfline; do
-eval $(lvs --noheadings --nameprefixes -o lv_name $(echo $dfline | awk '{print $1}'))
+  eval $(lvs --noheadings --nameprefixes -o lv_name $(echo $dfline | awk '{print $1}'))
   fs_size=$(echo $dfline | awk '{print $2}')
   fs_used=$(echo $dfline | awk '{print $3}')
   fs_path=$(echo $dfline | awk '{print $6}')
-  fs_total=$((fs_total+fs_size))
   snap_size=$((fs_used/2))
   [[ $fs_path =~ ^/$|^/var && $snap_size -lt $rootvar_min ]] && snap_size=$rootvar_min
   snap_size=$((snap_size-snap_size%LVM2_VG_EXTENT_SIZE+LVM2_VG_EXTENT_SIZE))
-  echo "$LVM2_VG_NAME $LVM2_LV_NAME $snap_size" >> $SNAPSHOT_DATA_FILE
+  echo "$LVM2_VG_NAME $LVM2_LV_NAME $snap_size $fs_size" >> $SNAPSHOT_DATA_FILE
   printf '%-15s%10s\n' $LVM2_LV_NAME $((snap_size/2**20)) >> $SNAPSHOT_REPORT
 done
 
 # Get the total space required for snapshots
+for fs_size in $(awk '{print $4}' $SNAPSHOT_DATA_FILE); do
+  fs_total=$((fs_total+fs_size))
+done
 for snap_size in $(awk '{print $3}' $SNAPSHOT_DATA_FILE); do
   snap_total=$((snap_total+snap_size))
 done
@@ -102,8 +104,8 @@ if [[ $fs_total -lt $LVM2_VG_FREE ]]; then
 elif [[ $snap_total -lt $LVM2_VG_FREE ]]; then
   log_info "There is sufficient space in the $LVM2_VG_NAME volume group."
   cat > $SOLUTION_FILE <<-EOF
-	The free space in the $LVM2_VG_NAME volume group is greater than the
-	estimated space required to create LVM snapshots. 
+	The free space in the $LVM2_VG_NAME volume group is sufficient to
+	accommodate the estimated space required to create LVM snapshots. 
 	EOF
 else
   rm $SNAPSHOT_DATA_FILE
