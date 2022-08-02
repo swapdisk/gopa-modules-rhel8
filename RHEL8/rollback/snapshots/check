@@ -137,7 +137,7 @@ if [[ $snapshot_autoextend_threshold -gt 70 || $snapshot_autoextend_percent -lt 
   log_info 'LVM autoextend settings will be adjusted.'
   cat >> $SOLUTION_FILE <<-EOF
 
-	The recommended settings for the LVM snapshot autoextend option is
+	The recommended settings for the LVM snapshot autoextend option are
 	threshold of 70 or less and percent of at least 20. The settings
 	currently configured are: 
 
