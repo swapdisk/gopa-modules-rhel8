@@ -29,6 +29,23 @@ PREUPGRADE_SCRIPT_PATH=$PREUPGRADE_SCRIPT_DIR/00_lvm_autoextend.sh
 SNAPSHOT_DATA_FILE=$VALUE_TMP_PREUPGRADE/snapshot-data
 SNAPSHOT_REPORT=$VALUE_TMP_PREUPGRADE/snapshot-report.log
 
+# Verify we are booted with the bootloader default kernel version
+if [[ ! "$(grubby --default-kernel)" =~ "$(uname -r)" ]]; then
+  log_extreme_risk "Not running bootloader default kernel version!"
+  cat >> $SOLUTION_FILE <<-EOF
+	This host is not running the default kernel version currently configed
+	in the bootloader. Maybe there was a new kernel version installed, but
+	then the host was not rebooted?... 
+
+	GRUB default: $(grubby --default-kernel)
+	Running kernel: $(uname -r)
+
+	To reduce the risk of boot issues related to changes made since the last
+	reboot, you must reboot now. Then rerun the Preupgrade Assistant.
+        EOF
+  exit_fail
+fi
+
 # Get volume group of root filesystem
 eval $(lvs --units b --nosuffix --noheadings --nameprefixes -o vg_name,vg_free,vg_extent_size $(findmnt -o source --noheadings --target /))
 if [[ -z $LVM2_VG_NAME ]]; then
