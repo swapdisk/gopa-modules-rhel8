@@ -51,7 +51,7 @@ Requires:       coreutils
 
 %description
 This package provides a base set of modules to support in-place
-upgrade to RHEL8. These modules require that Zebra playbooks are
+upgrade to RHEL8. These modules require that Gopa playbooks are
 used to automate the upgrade with the required Leapp integration.
 
 
